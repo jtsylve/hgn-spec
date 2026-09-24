@@ -1,0 +1,21 @@
+HGN checkpoint format specification
+
+Copyright (c) 2026 Joe T. Sylve, Ph.D. <joe.sylve@gmail.com>
+
+SPDX-License-Identifier: MIT OR CC-BY-4.0
+
+Source: https://github.com/jtsylve/hgn-spec
+
+This document set is dual-licensed. You may use it under either of these
+licenses, at your option:
+
+  - the MIT License, in LICENSE-MIT, or
+  - the Creative Commons Attribution 4.0 International License (CC BY 4.0),
+    in LICENSE-CC-BY-4.0 and at
+    https://creativecommons.org/licenses/by/4.0/
+
+Both licenses require attribution and nothing more.
+
+The MIT License suits use in software: code, test fixtures and test vectors
+that implement or copy from this specification. CC BY 4.0 suits use as 
+documentation: republishing, quoting, adapting or translating the text.
