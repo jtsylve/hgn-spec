@@ -166,7 +166,7 @@ lists every source, its license and its pinned revision.
 
 ## Document Revision
 
-*Version 1.0.0, 2026-09-24.*
+*Version 1.0.1, 2026-09-24.*
 
 Describes halogen's published checkpoints and the
 halogen-flash 0.13.5 reader. See the [change log](CHANGELOG.md).

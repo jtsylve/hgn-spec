@@ -437,14 +437,8 @@ The importer refuses these types on `out_proj`. It also refuses Q5_1 there,
 although a Q5_1 group is 32 values wide. A new importer can support Q5_1 on
 `out_proj` by moving whole groups, as for `q4c`.
 
-Halogen-flash 0.13.5 does not apply the reorder in these cases:
-
-- `in_proj_a` and `in_proj_b` with GGUF type Q8_0
-- `in_proj_qkv`, `in_proj_z` and `out_proj` with GGUF type F32 or F16
-- `conv1d` and `dt_bias` with GGUF type BF16
-
-Its output is then in the wrong order. A new importer must apply the reorder
-for every type.
+Halogen-flash 0.13.5 skips the reorder for some source types. A new importer
+must apply the reorder for every type.
 
 ## Output order
 

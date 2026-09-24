@@ -5,6 +5,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 numbers follow the [versioning rules](README.md#versioning) of this
 specification.
 
+## [1.0.1] - 2026-09-24
+
+### Fixed
+
+- [GGUF import](GGUF-IMPORT.md#head-reorder): removed the list of source
+  types for which halogen-flash 0.13.5 skips the head reorder. The list was
+  not complete and had one error: halogen-flash refuses a BF16 `ssm_conv1d`,
+  because the tensor fails the shape check. The rule for a new importer does
+  not change.
+
 ## [1.0.0] - 2026-09-24
 
 The first release. It describes halogen's published checkpoints and the
@@ -47,4 +57,5 @@ These facts remain **not established** in this version:
 - the row order of the 27B `q_proj` (query and gate for each head)
 - the structure and configuration values of the 27B drafter
 
+[1.0.1]: https://github.com/jtsylve/hgn-spec/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/jtsylve/hgn-spec/releases/tag/v1.0.0
