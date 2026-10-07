@@ -16,12 +16,13 @@ has run in gufo yet.
 | --- | --- | --- |
 | Container | GGUF only (`src/core/gguf_reader.*`). No tensor-source interface | An HGN reader |
 | Residency | Flash-Next: one `hipMalloc` for each tensor, O_DIRECT upload through pinned staging (`src/core/hip/weight_upload.*`) | Either residency model works |
-| Dense matrices | Q8_0 in the fused kernels; BF16, F16 and F32 in some roles | Published checkpoint: `q4c` and `bf16`. Its overlay: `q8g64` for `o_proj`. GGUF imports: `q8s32` |
-| Routed experts | Q4_K, Q5_K, Q5_1 and Q8_0 (vendored MMQ and MMVQ, F16 WMMA routes) | Published checkpoint: `q4c`. GGUF imports: `q4a` and `q5a` variant 1, `q5a` variant 0, `q8s32` |
+| Dense matrices | Q8_0 in the fused kernels; BF16, F16 and F32 in some roles | w4b: `q4c` and `bf16`. Its overlay: `q8g64` for `o_proj`. v2 and ht43: `ht`, plus `q6g64` (v2) or `q8g64` (ht43) for the hyper-connection matrices. GGUF imports: `q8s32` |
+| Routed experts | Q4_K, Q5_K, Q5_1 and Q8_0 (vendored MMQ and MMVQ, F16 WMMA routes) | w4b: `q4c`. v2: `i4r`. ht43: `ht`. GGUF imports: `q4a` and `q5a` variant 1, `q5a` variant 0, `q8s32` |
+| Rotation vectors | Not checked in this revision | `f16` vectors for every `ht` and `i4r` tensor of v2 and ht43 (see [Rotation vectors](TENSORS.md#rotation-vectors)) |
 | Embedding | Q8_0, Q6_K, BF16, F16 or F32 rows | `q4c` |
 | Q6_K | Rejected on the HIP path (`kernels/rocm/device_model.cpp`) | `q6k` in GGUF imports |
-| MTP head | Sidecar GGUF, `nextn.*` and `blk.48.*`, shared Q8_0 | `mtp.*`: `q4c`, or `q8g64` from the overlay or head file |
-| n-gram table | IQ4_NL or BF16, dequantized to F32 on the CPU (`ngram.*`) | `fp8g` (published) or `iq4nl` |
+| MTP head | Sidecar GGUF, `nextn.*` and `blk.48.*`, shared Q8_0 | `mtp.*`: `q4c`, or `q8g64` from the overlay, the head file, v2 or ht43 |
+| n-gram table | IQ4_NL or BF16, dequantized to F32 on the CPU (`ngram.*`) | `fp8g` (published, in w4b or in the [n-gram table file](CONTAINER.md#n-gram-table-file)), or `iq4nl`, `q8_0`, `q5_0` or `q5_1` |
 | DeltaNet head order | Tiled: value head `h` reads key head `h mod 16` | Grouped: key head `h / 3` |
 | Norm gains | GGUF convention: the 1 is already added | Zero-centred for the [listed norms](TENSORS.md#zero-centred-norm-gains) |
 | `A_log` | GGUF `ssm_a = −exp(A_log)`, F32 | `A_log` as `bf16` |
@@ -91,15 +92,22 @@ conversions (see [A transform stage](PORTING.md#a-transform-stage)).
 
 | Store | First path in gufo | Performance path |
 | --- | --- | --- |
-| `q4c`, learned codebook | None | New `q4c` kernels, floating-point form. Required for the published checkpoint |
+| `q4c`, learned codebook | None | New `q4c` kernels, floating-point form. Required for every published checkpoint |
 | `q4c`, Q4_0 or IQ4 codebook | Rebuild Q4_0 or IQ4_NL blocks. gufo has no Flash-Next kernels for these yet | New `q4c` kernels, integer form |
 | `q8g64` | Decode to F16 at load | A new `q8g64` kernel |
+| `q6g64` | Decode to F16 at load | A new `q6g64` kernel, as the `q8g64` one |
+| `ht` | Decode the dense matrices to the original basis at load | New [ht kernels](PORTING.md#the-ht-kernels). Required for the ht43 experts |
+| `i4r` | None | New [i4r kernels](PORTING.md#the-i4r-kernels). Required for v2 |
 | `q8s32` | Rebuild Q8_0 blocks; the Q8_0 kernels run them | — |
 | `q5a` variant 0, `q4a` and `q5a` variant 1 | Rebuild Q5_1, Q4_K and Q5_K blocks; the expert kernels run them | Planar affine kernels, as an experiment |
 | `q6k` | Instantiate the vendored MMQ/MMVQ Q6_K code | — |
 | `bf16` | `SmallGemm` for 1–8 rows, hipBLASLt for wide batches | — |
 | `fp8g` table | A decoder in `ngram.*` | Raw-row upload |
 | `iq4nl` table | The current `NgramTable`, with the HGN offset | Raw-row upload |
+| `q8_0`, `q5_0`, `q5_1` tables | A GGUF row decoder in `ngram.*`, with the HGN offset | Raw-row upload |
+
+v2 and ht43 hold no n-gram table. Read the table from the
+[n-gram table file](CONTAINER.md#n-gram-table-file) for them.
 
 ### q4c in gufo
 
@@ -169,14 +177,15 @@ apply to it without a separate qualification.
 | `q4c` kernels | `qwen38_flash_next.q4c_ops` | `qwen38_flash_next;hip;gpu;gfx1151` |
 | `q8g64` kernel | `qwen38_flash_next.q8g64_ops` | `qwen38_flash_next;hip;gpu;gfx1151` |
 | Model, exact | `qwen38_flash_next_session_test` with an HGN `--model` | model tests |
-| Model, published | The same, with the published checkpoint and overlay | model tests |
+| Model, published | The same, with w4b and its overlay | model tests |
+| Model, v2 and ht43 | The same, with v2 or ht43 and the n-gram table file | model tests |
 
 The content of each check is in [Qualification](PORTING.md#qualification).
 Use `tests/models/qwen38_flash_next/routed_wmma_ops_test.cpp` as the model for
 the kernel tests. For the exact-model check, convert the UD-Q4_K_XL build that
 gufo supports (see [the worked example](GGUF-IMPORT.md#worked-example)).
 
-Measure the quality of the published checkpoint with the precedent in
+Measure the quality of each published checkpoint with the precedent in
 `docs/models/qwen3.8-27b/QUALITY.md`. Record each retained or rejected layout
 in `docs/models/qwen3.8-flash-next/EXPERIMENTS.md` in the table form
 `| Experiment | Decision / evidence |`.
@@ -186,4 +195,5 @@ in `docs/models/qwen3.8-flash-next/EXPERIMENTS.md` in the table form
 The [milestones](PORTING.md#milestones) of the porting guide apply. In gufo,
 milestone 2 uses the UD-Q4_K_XL build and must match the GGUF path's logits
 bit for bit; milestone 3 also gives gufo IQ4_XS, IQ4_NL and IQ3_S expert
-support, which it does not have today.
+support, which it does not have today. Milestone 5, v2 and ht43, is later
+work. It needs the rotated formats, which no gufo plan covers yet.

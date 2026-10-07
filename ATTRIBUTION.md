@@ -46,9 +46,9 @@ below. Each source keeps its own license and copyright.
 
 | Component | Relationship | License | Pinned revision / version | Source |
 | --- | --- | --- | --- | --- |
-| halogen-flash engine | Originator of the HGN format. Its observed behavior is the source of the container rules, the halogen-flash reader rules and the GGUF import rules | Proprietary end-user license agreement, version 0.1; section 3 permits reverse engineering and welcomes interoperability research | Image `ghcr.io/peonist-ai/halogen-flash-server:0.13.5`; engine binary SHA-256 `8b34225c3ba077bd5eab1068e1a402b1b50b319cde3e02dfb24255aac8eeeb0d` | [peonist-ai/halogen-flash-server](https://github.com/peonist-ai/halogen-flash-server) |
+| halogen-flash engine | Originator of the HGN format. Its observed behavior is the source of the container rules, the halogen-flash reader rules and the GGUF import rules | Proprietary end-user license agreement, version 0.1; section 3 permits reverse engineering and welcomes interoperability research | Image `ghcr.io/peonist-ai/halogen-flash-server:0.16.2`; engine binary SHA-256 `ac123b7ff5134e527368fc0644598379bcd976630691d36e9a469d55bee23f3b` | [peonist-ai/halogen-flash-server](https://github.com/peonist-ai/halogen-flash-server) |
 | halogen engine (27B) | Uses the same container. Not analyzed | Proprietary; see its repository | Image `ghcr.io/peonist-ai/halogen:0.1.4` (named by the checkpoint) | [peonist-ai/halogen-server](https://github.com/peonist-ai/halogen-server) |
-| Flash-Next HGN checkpoint | Published files. Headers, tables and sampled payloads checked against this specification | `apache-2.0` in the repository metadata; the publisher states that the base model's terms govern the weights | `e053f488b120b99ed2525e6ac99f68c51b3b6179` | [peonist-ai/halogen-qwen3.8-flash-next](https://huggingface.co/peonist-ai/halogen-qwen3.8-flash-next) |
+| Flash-Next HGN checkpoint | Published files. Headers, tables and sampled payloads checked against this specification | `apache-2.0` in the repository metadata; the publisher states that the base model's terms govern the weights | `6e1aa1acda75bd8a3bb9043b1545f83187cb6ded` | [peonist-ai/halogen-qwen3.8-flash-next](https://huggingface.co/peonist-ai/halogen-qwen3.8-flash-next) |
 | 27B HGN checkpoint | Published file. Source of the `fp8r`, `i4l` and `q4c` variant 0 and 1 rules | `apache-2.0` in the repository metadata; the publisher states that the base model's terms govern the weights | `800ec932fc4a83ddd18b83d293cfd147946e77f9` | [peonist-ai/halogen-qwen3.8-27b](https://huggingface.co/peonist-ai/halogen-qwen3.8-27b) |
 
 Copyright in the halogen engines and in the HGN checkpoints belongs to
@@ -70,12 +70,12 @@ redistributes neither.
 
 | Definition | Used for | License or status | Source |
 | --- | --- | --- | --- |
-| GGUF container and GGML block types (Q4_0, Q5_1, Q8_0, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, IQ3_S), the IQ4_NL levels and the IQ3_S grid | GGUF import, `q6k`, `iq4nl`, reverse conversion | `MIT`, Copyright (c) 2023-2026 The ggml authors | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) |
+| GGUF container and GGML block types (Q4_0, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, IQ3_S), the IQ4_NL levels and the IQ3_S grid | GGUF import, `q6k`, `iq4nl`, `q8_0`, `q5_0`, `q5_1`, reverse conversion | `MIT`, Copyright (c) 2023-2026 The ggml authors | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) |
 | `gguf` Python package, version 0.19.0 | Independent dequantizer for the conversion checks | `MIT`, The ggml authors | [gguf on PyPI](https://pypi.org/project/gguf/) |
 | NF4 levels | `q4c` variant 1 codebook | Published in QLoRA (Dettmers et al., 2023); implementation `MIT` | [bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) |
 | FP4 E2M1 and 8-bit E4M3 encodings | `q4c` variant 0, the fp8 encoding | OCP Microscaling Formats (MX) specification; FP8 formats per Micikevicius et al., 2022 | [Open Compute Project](https://www.opencompute.org/) |
 | NVFP4 block structure | `q4c` variant 0 (16-value blocks, E4M3 block scales) | NVIDIA format description | [NVIDIA](https://developer.nvidia.com/) |
-| Sylvester Hadamard matrix and the fast Walsh–Hadamard transform | `i4l` | Public mathematics | — |
+| Sylvester Hadamard matrix and the fast Walsh–Hadamard transform | `i4l`, `i4r`, `ht` | Public mathematics | — |
 | IEEE 754 binary16 and binary32 | All floating-point fields | IEEE standard | [IEEE 754-2019](https://standards.ieee.org/ieee/754/6210/) |
 | FIPS 180-4 SHA-256 | Digests in the test vectors and the digest listing | Public standard | [NIST FIPS 180-4](https://csrc.nist.gov/pubs/fips/180-4/upd1/final) |
 

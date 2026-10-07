@@ -2,7 +2,7 @@
 
 This document lists every tensor of a Qwen3.8 Flash-Next checkpoint in HGN
 naming. For each tensor it gives the shape, the store codes that halogen-flash
-accepts, the store of the published checkpoint and the convention of the
+accepts, the stores of the published checkpoints and the convention of the
 stored values.
 
 ## Model constants
@@ -37,6 +37,8 @@ The GGUF form of these constants is in
 | `layers.L.SUBLAYER.*` | A tensor of trunk layer `L`, in decimal without leading zeros |
 | `mtp.*` | A tensor of the MTP head |
 | `visual.*` | A tensor of the vision sidecar |
+| `BASE.suh`, `BASE.svh` | The [rotation vectors](#rotation-vectors) of the matrix `BASE.weight` |
+| `layers.L.mlp.experts.su` | The shared input vector of the routed experts of layer `L` |
 
 `SUBLAYER` is one of six names. The canonical order of the sublayers is:
 
@@ -56,8 +58,8 @@ store codes it accepts.
 
 | Role | Treatment | Accepted stores |
 | --- | --- | --- |
-| Matrix | The kernels read the payload in place | `bf16`, `q4c` variant 2, `q8g64`, `q8s32`, `q6k`. Also `q4a` and `q5a`, which halogen-flash expands to `bf16` at load |
-| Dense | Expanded to a device `bf16` copy at load | `bf16`, `q4c` variant 2, `q8g64`, `q8s32`, `q6k`, `q4a`, `q5a` |
+| Matrix | The kernels read the payload in place | `bf16`, `q4c` variant 2, `q8g64`, `q8s32`, `q6k`, `q6g64`, `ht`. Also `q4a` and `q5a`, which halogen-flash expands to `bf16` at load |
+| Dense | Expanded to a device `bf16` copy at load | `bf16`, `q4c` variant 2, `q8g64`, `q8s32`, `q6k`, `q6g64`, `q4a`, `q5a` |
 | Expert | Read in place by the routed-expert kernels | Given for each tensor below |
 | Fixed | Exactly one layout | Given for each tensor below |
 
@@ -65,7 +67,40 @@ Halogen-flash has no kernel for dense `q4a` and `q5a` matrices. It expands
 them to `bf16` at load, which costs about three times their memory. A port can
 do better (see [the porting guide](PORTING.md#affine-formats)).
 
-## The published checkpoint
+Rules for `q6g64`, `ht` and `i4r`:
+
+- A `q6g64` matrix must start at a 16-byte boundary. Write variant 64.
+- An `ht` matrix must be 2-D, and both dimensions must be multiples of 128.
+  It needs its two [rotation vectors](#rotation-vectors). Halogen-flash reads
+  an `ht` matrix only in place. It refuses an `ht` matrix that it cannot keep
+  in registered memory.
+- `ht` and `i4r` are not Dense stores. So `embed_tokens.weight`, the norm
+  gains and the router cannot use them.
+
+These Matrix tensors cannot be `ht`, because a dimension is not a multiple of
+128: `input_mix_weight_down`, `input_mix_weight_up` and `block_inject_weight`
+in every hyper-connection and mixer, `in_proj_a`, `in_proj_b` and
+`shared_expert_gate`.
+
+Halogen-flash computes `lm_head.weight` and `mlp.shared_expert_gate.weight`
+with `f32` outputs. It has no `f32` path for `q8g64` and `q6g64`, so it
+refuses these two stores for these two tensors.  `ht` is accepted for `lm_head.weight`.
+
+## Published checkpoints
+
+The Flash-Next repository publishes three checkpoints. They hold the same
+tensors, except for the n-gram table and the rotation vectors.
+
+| Checkpoint | Tensors | n-gram table | Rotation vectors | Overlay files |
+| --- | ---: | --- | ---: | --- |
+| `qwen38-flash-next-w4b.hgn` | 1,198 | In the file | 0 | Two |
+| `qwen38-flash-next-v2.hgn` | 2,015 | In the [n-gram table file](CONTAINER.md#n-gram-table-file) | 818 | None |
+| `qwen38-flash-next-ht43.hgn` | 2,015 | In the n-gram table file | 818 | None |
+
+Its publisher names v2 as the default checkpoint, and ht43 as a smaller
+checkpoint to opt in to. w4b still loads.
+
+### w4b
 
 `qwen38-flash-next-w4b.hgn` holds 1,198 tensors: the trunk, the n-gram table
 and the complete MTP head. It uses four stores:
@@ -82,12 +117,52 @@ Its codebooks are learned for each tensor (see
 files](CONTAINER.md#overlay-file) replace 723 of its matrices and the 18
 dense projections of the MTP head.
 
+### v2
+
+`qwen38-flash-next-v2.hgn` holds 2,015 tensors: the trunk, its rotation
+vectors and the complete MTP head. It does not hold the n-gram table. It uses
+eight stores:
+
+| Store | Tensors | Use |
+| --- | ---: | --- |
+| `ht` variant `0x1208` (4 bits) | 313 | `lm_head`; `q_proj`, `k_proj`, `v_proj`, `o_proj` and `index_qk_proj`; `in_proj_qkv`, `in_proj_z` and `out_proj`; the three shared-expert projections |
+| `q6g64` | 290 | `input_mix_weight_down`, `input_mix_weight_up` and `block_inject_weight` of every hyper-connection, and the two projections of the final mixer |
+| `i4r` | 96 | The routed experts of every layer |
+| `q4c` variant 2 | 124 | `embed_tokens`, `in_proj_a`, `in_proj_b`, `shared_expert_gate`, and the three `q4c` tensors of the MTP head |
+| `q8g64` | 18 | The dense projections of the MTP head |
+| `bf16` | 353 | As in w4b |
+| `f16` | 818 | Rotation vectors |
+| `i64` | 3 | The PLE index vectors |
+
+Every `bf16`, `i64` and `q4c` entry of v2 is equal to the w4b entry of the
+same name. The store, shape, size, checksum and variant are equal. Its 31 `mtp.`
+tensors are equal to those of the [MTP head file](CONTAINER.md#mtp-head-file).
+
+### ht43
+
+`qwen38-flash-next-ht43.hgn` is v2 with two differences:
+
+- The routed experts are `ht`: variant `0x1208` (4 bits) in the even layers
+  and `0x1206` (3 bits) in the odd layers. They have rotation vectors for each
+  expert (see [ht experts](STORAGE.md#ht-experts)).
+- The hyper-connection and mixer projections are `q8g64`, not `q6g64`.
+
+| Store | Tensors |
+| --- | ---: |
+| `ht` variant `0x1208` (4 bits) | 361 |
+| `ht` variant `0x1206` (3 bits) | 48 |
+| `q8g64` | 308 |
+| `q4c` variant 2 | 124 |
+| `bf16` | 353 |
+| `f16` | 818 |
+| `i64` | 3 |
+
 ## Global tensors
 
-| Name | Shape | Role | Published store | Notes |
+| Name | Shape | Role | Store in w4b | Notes |
 | --- | --- | --- | --- | --- |
 | `embed_tokens.weight` | `[248320, 2560]` | Dense | `q4c` | |
-| `lm_head.weight` | `[248320, 2560]` | Matrix | `q4c` | |
+| `lm_head.weight` | `[248320, 2560]` | Matrix | `q4c` | Not `q8g64` or `q6g64`. `ht` in v2 and ht43 |
 | `hyper_connection_mixer.hc_norm.weight` | `[10240]` | Dense | `bf16` | [Zero-centred](#zero-centred-norm-gains) |
 | `hyper_connection_mixer.input_mix_weight_down.weight` | `[320, 10240]` | Matrix | `q4c` | |
 | `hyper_connection_mixer.input_mix_weight_up.weight` | `[10240, 320]` | Matrix | `q4c` | |
@@ -95,7 +170,9 @@ dense projections of the MTP head.
 ## Tensors of every layer
 
 Prefix `layers.L.` for `L` from 0 to 47. Unless the table says otherwise, the
-published store of a Matrix is `q4c` and of a Dense vector is `bf16`.
+store of a Matrix in w4b is `q4c` and of a Dense vector is `bf16`. The
+[published checkpoints](#published-checkpoints) section gives the stores of v2
+and ht43.
 
 ### Hyper-connections
 
@@ -119,7 +196,7 @@ Prefix `layers.L.mlp.`.
 | `shared_expert.gate_proj.weight` | `[640, 2560]` | Matrix | |
 | `shared_expert.up_proj.weight` | `[640, 2560]` | Matrix | |
 | `shared_expert.down_proj.weight` | `[2560, 640]` | Matrix | |
-| `shared_expert_gate.weight` | `[1, 2560]` | Matrix | A one-row matrix, not a vector |
+| `shared_expert_gate.weight` | `[1, 2560]` | Matrix | A one-row matrix, not a vector. Not `q8g64` or `q6g64` |
 | `experts.gate_up_proj.weight` | `[512, 1280, 2560]` | Expert | See [Fused experts](#fused-experts) |
 | `experts.down_proj.weight` | `[512, 2560, 640]` | Expert | See [Fused experts](#fused-experts) |
 
@@ -138,17 +215,35 @@ experts in one tensor of `512 × 1280` rows:
 `2560e + 2559` are the down projection of expert `e`.
 
 A kernel finds the data of global row `R` with the ordinary rules of the store
-(see [Storage formats](STORAGE.md)). The codes and the scales of an expert are
-not in one contiguous block: each plane holds the rows of all experts.
+(see [Storage formats](STORAGE.md)). For most stores, the codes and the scales
+of an expert are not in one contiguous block: each plane holds the rows of
+all experts. `ht` is different: the data of each expert is one contiguous
+block, and its gate and up rows share tile bands (see
+[ht experts](STORAGE.md#ht-experts)).
 
 | Tensor | Accepted stores |
 | --- | --- |
-| `experts.gate_up_proj.weight` | `q4c` variant 2; `q4a` variant 1; `q5a` variant 1 |
-| `experts.down_proj.weight` | `q4c` variant 2; `q8s32` with a payload size of exactly 901,775,360 bytes; `q5a` variant 0 |
+| `experts.gate_up_proj.weight` | `q4c` variant 2; `q4a` variant 1; `q5a` variant 1; `ht`; `i4r` |
+| `experts.down_proj.weight` | `q4c` variant 2; `q8s32` with a payload size of exactly 901,775,360 bytes; `q5a` variant 0; `ht`; `i4r` |
+
+These rules apply to `ht` and `i4r` experts:
+
+- Both projections must use the same store. An `ht` pair can use a
+  different code width in each projection.
+- Both projections must stay in registered memory. Halogen-flash has no copy
+  path for them.
+- An `i4r` payload must start at a 64-byte boundary.
+- The layer must hold the four [rotation vectors](#rotation-vectors) of its
+  experts.
 
 A reader must refuse all other combinations. The pair variant of the affine
 formats has no gate-and-up kernel. The k-scale variant cannot hold the down
 projection, because `K = 640` is not a multiple of 256.
+
+Halogen-flash sizes its expert buffers from layer 0. Its behavior with
+different expert stores in different layers is **not established**. A writer
+should use one expert store in all 48 layers. The `ht` code width can differ
+between layers, as in ht43.
 
 ### Gated DeltaNet
 
@@ -204,7 +299,7 @@ The PLE tensors belong to layer 1 only. Prefix `layers.1.ple.`.
 | `ple_embedding.layer_multipliers` | `[3]` | Fixed: `i64` | |
 | `ple_embedding.ngram_heads_offsets` | `[16]` | Fixed: `i64` | |
 | `ple_embedding.ngram_heads_vocab_sizes` | `[16]` | Fixed: `i64` | |
-| `ngram_embedding.weight` | `[128, R, 160]` | Fixed: `iq4nl` or `fp8g` | The n-gram table. See below |
+| `ngram_embedding.weight` | `[128, R, 160]` | Fixed: `fp8g`, `iq4nl`, `q8_0`, `q5_0` or `q5_1` | The n-gram table. See below |
 
 The three `i64` vectors are the parameters of the n-gram hash. The hash itself
 is outside this specification. The published values are in
@@ -214,7 +309,8 @@ is outside this specification. The published values are in
 
 `layers.1.ple.ngram_embedding.weight` has `128 × R` rows of 160 values. The
 published table has `R = 2500012`, which is 320,001,536 rows and 51.2 × 10⁹
-values: 51.2 GB as `fp8g`, 28.8 GB as `iq4nl`. For each token the model
+values: 51.2 GB as `fp8g`, 28.8 GB as `iq4nl`, 54.4 GB as `q8_0`, 35.2 GB
+as `q5_0` and 38.4 GB as `q5_1`. For each token the model
 selects 16 rows, one for each n-gram head, and joins them into one 2560-wide
 vector.
 
@@ -225,8 +321,37 @@ The table is the only tensor that halogen-flash does not make GPU-visible:
   into a pinned staging buffer. With many rows it uses several threads.
 - The device dequantizes the staged rows to `bf16`.
 
-A converter that makes a complete HGN file must include the table. A file
-without it cannot serve.
+For `iq4nl`, `q8_0`, `q5_0` and `q5_1`, halogen-flash checks only that
+`shape[2]` is 160 and that the payload size is correct.
+
+A complete checkpoint holds the table. A checkpoint without the table can
+serve only with an [n-gram table file](CONTAINER.md#n-gram-table-file). The
+v2 and ht43 checkpoints hold no table. A converter that makes a complete HGN
+file must include the table.
+
+## Rotation vectors
+
+An `ht` or `i4r` matrix uses rotation vectors (see
+[Storage formats](STORAGE.md#rotation-vectors)). Each vector is a Fixed
+tensor of store `f16`. Its element count must be exact. Its rank and shape
+are free.
+
+| Matrix | Vectors, with their element counts |
+| --- | --- |
+| A 2-D `ht` matrix `BASE.weight` of shape `[N, K]` | `BASE.suh`: `K`. `BASE.svh`: `N` |
+| `ht` routed experts of layer `L` | `experts.su`: 2,560. `experts.gate_up_proj.svh`: 655,360. `experts.down_proj.suh`: 327,680. `experts.down_proj.svh`: 1,310,720 |
+| `i4r` routed experts of layer `L` | `experts.su`: 2,560. `experts.gate_up_proj.svh`: 1,280. `experts.down_proj.suh`: 640. `experts.down_proj.svh`: 2,560 |
+
+The expert vectors have the prefix `layers.L.mlp.`. In the published files,
+each vector has the shape `[count]`. The `ht` expert vectors are the
+exception: they have the shape `[512, count / 512]`, except `experts.su`.
+
+`mlp.shared_expert.gate_proj.suh` and `mlp.shared_expert.up_proj.suh` can be
+absent. Halogen-flash then uses `mlp.experts.su` of the same layer. The
+published files hold both vectors.
+
+Halogen-flash looks for each vector in the overlay file first, then in the
+checkpoint.
 
 ## Value conventions
 
@@ -293,10 +418,11 @@ of head `h` is `A = −exp(A_log)`. GGUF stores `A` itself.
 ## MTP head
 
 The MTP head is one full-attention block with its own mixers. It uses the
-trunk's `embed_tokens` and `lm_head`. The published checkpoint holds it, and
-so does the separate MTP head file.
+trunk's `embed_tokens` and `lm_head`. All three published checkpoints hold
+it, and so does the separate MTP head file. The v2 and ht43 checkpoints hold
+the tensors of the head file.
 
-| Name | Shape | Role | Store: checkpoint / head file |
+| Name | Shape | Role | Store: w4b / head file, v2 and ht43 |
 | --- | --- | --- | --- |
 | `mtp.fc_embedding.weight` | `[2560, 2560]` | Matrix | `q4c` / `q8g64` |
 | `mtp.fc_hidden.weight` | `[2560, 2560]` | Matrix | `q4c` / `q8g64` |
@@ -313,7 +439,13 @@ so does the separate MTP head file.
 The MTP block uses the full-attention tensor set of the trunk, including the
 indexer. Its routed experts are stricter than the trunk's:
 `experts.gate_up_proj.weight` must be `q4c`, and `experts.down_proj.weight`
-must be `q4c` or `q8s32`.
+must be `q4c` or `q8s32`. They cannot be `ht` or `i4r`.
+
+The Matrix tensors of the head accept the same stores as the trunk Matrix
+tensors, `ht` and `q6g64` included. An `ht` matrix of the head needs its own
+rotation vectors, with the `mtp.` prefix. The published files hold no
+`mtp.layers.0.mlp.experts.su`. So an `ht` shared expert of the head needs its
+own `.suh` vectors.
 
 ## Vision sidecar
 

@@ -15,10 +15,13 @@ little-endian. Both halogen engines use the same container.
 
 The payload start is always a multiple of 64. Each payload starts at a
 multiple of 64. The bytes between the end of one payload and the start of the
-next are zero. The file ends at the end of the last payload, rounded up to 64.
+next are zero. The file ends at the end of the last payload. A writer can pad
+this end to a multiple of 64 with zero bytes. A reader must accept both forms.
 
-All six published files follow this layout exactly: their payloads are
-contiguous, in table order, with no gap larger than the padding.
+All nine published files follow this layout: their payloads are contiguous,
+in table order, with no gap larger than the padding. Seven of them end at a
+multiple of 64. `qwen38-flash-next-v2.hgn` and `qwen38-flash-next-ht43.hgn`
+end at the end of their last payload.
 
 ## Header
 
@@ -43,11 +46,17 @@ These identities occur:
 
 | Identity | File |
 | --- | --- |
-| `qwen3.8-flash-next` | The Flash-Next checkpoint and both of its overlay files |
+| `qwen3.8-flash-next` | The Flash-Next w4b checkpoint and both of its overlay files |
+| `qwen3.8-flash-next-v2` | The Flash-Next v2 checkpoint |
+| `qwen3.8-flash-next-ht43` | The Flash-Next ht43 checkpoint |
+| `qwen3.8-flash-next-ngram` | The Flash-Next n-gram table file |
 | `qwen3.8-flash-next-mtp` | The Flash-Next MTP head file |
 | `qwen3.8-flash-next-vision` | The Flash-Next vision sidecar |
 | `qwen3.8-flash-next-gguf` | Every file that halogen-flash makes from a GGUF file |
 | `Qwen3.8-27B-p1-d2` | The 27B checkpoint |
+
+Halogen-flash does not compare the identities of a checkpoint and its
+companion files.
 
 ## Tensor table
 
@@ -114,9 +123,25 @@ that purpose.
    rule, the `K` rule, the variant and the alignment. The checks are in
    [Storage formats](STORAGE.md).
 
-Halogen-flash does steps 1 to 5 when it opens the file. It does step 6 when the
-model first uses each tensor. It does not check that payloads do not overlap.
-A reader should check it.
+Halogen-flash does steps 1, 2 and 4 when it opens the file. It does not do
+steps 3 and 5. It does not check that the table fits in the file. When two
+entries have the same name, it keeps the first entry. It does not check that payloads do not
+overlap. A reader must do steps 3 and 5, and should check for overlaps.
+
+Halogen-flash does step 6 in two parts:
+
+- At open, it checks every `ht` and `i4r` entry: the variant, the shape and
+  the size. One failed entry refuses the whole file, also when the model does
+  not use the tensor. This applies to every HGN file that halogen-flash opens.
+- For all other stores, it does the checks when the model first uses each
+  tensor.
+
+A writer must not write an `ht` or `i4r` entry that fails its checks.
+
+Halogen-flash also reads the header and the table before it loads the model,
+to plan memory. For this step it reads the file, but does not map it. It
+ignores a file with more than 2²⁰ entries, and then uses default values. A
+writer should not write more than 2²⁰ entries.
 
 A reader must not depend on the order of the entries.
 
@@ -126,7 +151,8 @@ A reader must not depend on the order of the entries.
    payload size. Refuse the list if any size rule fails.
 2. Compute the payload start, `pad(0x68 + 0xA0 × n, 64)`.
 3. Give each payload the next free offset. Advance by `pad(size, 64)`.
-4. Set the file size to the end of the last padded payload. Create the file at
+4. Set the file size to the end of the last payload. You can pad it to a
+   multiple of 64; the GGUF importer of halogen-flash does. Create the file at
    that size, so that all padding is zero.
 5. Write each payload at its offset and compute its checksum.
 6. Write the header and the table last, because the table holds the checksums.
@@ -140,8 +166,14 @@ The canonical order that the GGUF importer uses is in
 
 ## Companion files
 
-A checkpoint can come with other HGN files. Halogen-flash reads four kinds.
-All are optional for a reader that has a complete checkpoint.
+A checkpoint can come with other HGN files. Halogen-flash reads five kinds:
+the MTP head file, the overlay file, the n-gram table file, the vision
+sidecar and the repack cache. A complete checkpoint holds the n-gram table.
+For a complete checkpoint, all companion files are optional. A checkpoint
+without the n-gram table needs an n-gram table file.
+
+The `ht` and `i4r` checks at open (see [Reader procedure](#reader-procedure))
+apply to the companion files too.
 
 ### MTP head file
 
@@ -149,7 +181,8 @@ The multi-token-prediction (MTP) head can be a separate HGN file. Its
 published name is `qwen38-flash-next-mtp.hgn`, identity
 `qwen3.8-flash-next-mtp`, 31 tensors.
 
-The published Flash-Next checkpoint already holds the same 31 `mtp.` tensors.
+The published w4b checkpoint already holds the same 31 `mtp.` tensors. The
+v2 and ht43 checkpoints hold the 31 tensors of the head file, byte for byte.
 Halogen-flash needs the head file only when the trunk is a GGUF file, because
 it does not read the MTP tensors of a GGUF file.
 
@@ -192,6 +225,21 @@ Rules for each overlay tensor:
 The reader uses the overlay tensor in place of the base tensor. It does not
 make the base tensor resident.
 
+An `ht`,
+`i4r` or `q6g64` tensor can only be replaced by a tensor of the same store,
+size and variant. No overlay can change a tensor to or from these stores. An
+overlay can replace a [rotation vector](STORAGE.md#rotation-vectors) with an
+`f16` vector of the same size. It cannot add a vector that the base file does
+not hold.
+
+An operator can exclude overlay tensors with a regular expression. Halogen-flash
+searches each overlay tensor name for a match, and keeps the base tensor for
+each name that matches. An invalid expression is a start-up error.
+
+A checkpoint that holds `ht` tensors carries its own precision choices. The
+publisher ships no overlay for the v2 and ht43 checkpoints. Halogen-flash
+still applies an overlay file to such a checkpoint when one exists.
+
 The Flash-Next repository publishes two overlays with 741 tensors each. Both
 hold new copies of the 723 non-expert matrices of the trunk, all except the
 embedding, and of the 18 dense projections of the MTP head. They differ in one
@@ -201,6 +249,35 @@ choice:
 | --- | --- | --- |
 | `qwen38-flash-next-w4b.overlay.hgn` | `q8g64` | `q8g64` |
 | `qwen38-flash-next-w4b.overlay-speed.hgn` | `q4c` | `q8g64` |
+
+### N-gram table file
+
+The n-gram table can be a separate HGN file. Several checkpoints can then use
+one copy of the table. Its published name is `qwen38-flash-next-ngram.hgn`,
+identity `qwen3.8-flash-next-ngram`, 1 tensor. That tensor is equal to the
+table of the w4b checkpoint: the same store, shape, size and checksum.
+
+An operator setting names the file. Halogen-flash then applies these rules:
+
+- The file must be an HGN file. Halogen-flash refuses a GGUF file.
+- The file must hold `layers.1.ple.ngram_embedding.weight`, with a non-zero
+  payload. The [table rules](TENSORS.md#the-n-gram-table) apply to it.
+- The reader takes the table only from this file. It ignores a table in the
+  checkpoint or in the overlay file.
+- The reader ignores all other tensors of the file. The other PLE tensors,
+  the three `i64` vectors included, must be in the checkpoint.
+- The file stays in the page cache, mapped read-only, as the table of a
+  checkpoint does. Halogen-flash does not register it with the GPU.
+
+Without the setting, the reader takes the table from the overlay file, else
+from the checkpoint. If neither holds it, the reader refuses the checkpoint.
+
+Halogen-flash does not check that the table file belongs to the checkpoint.
+It compares no identity and no row count. A reader should check that each
+n-gram head fits in the table: `offsets[h] + vocab_sizes[h]` must not be more
+than the row count, for all 16 heads (see [Test vectors](TEST-VECTORS.md#published-files)).
+
+
 
 ### Vision sidecar
 
@@ -241,8 +318,8 @@ example with two shards:
   "entries": 1432,
   "arena_bytes": 61234567168,
   "shards": [
-    {"name": "/models/example-00001-of-00002.gguf", "size": 49950000000, "mtime_ns": 1790000000000000000},
-    {"name": "/models/example-00002-of-00002.gguf", "size": 12340000000, "mtime_ns": 1790000000000000000}
+    {"name": "example-00001-of-00002.gguf", "size": 49950000000, "mtime_ns": 1790000000000000000},
+    {"name": "example-00002-of-00002.gguf", "size": 12340000000, "mtime_ns": 1790000000000000000}
   ]
 }
 ```
@@ -253,10 +330,18 @@ example with two shards:
 - `entries` is the number of tensors in the cache file.
 - `arena_bytes` is the size of the payload region: the sum of all payload
   sizes, each rounded up to 64.
-- `name` is the shard path as the program opened it, with no JSON escaping.
+- `name` is the file name of the shard: the part of the path after the last
+  `/`. It is escaped for JSON:
+  - A `"` or a `\` gets a `\` before it.
+  - A byte below `0x20` becomes `\u00XX`, with `XX` in lower-case hexadecimal.
+  - Every other byte is written unchanged, bytes from `0x80` included.
 - `size` is the shard size in bytes. `mtime_ns` is its modification time in
   nanoseconds.
 - The numbers in the example are illustrations, not real values.
+
+The manifest does not record the version of the conversion rules. A port
+that writes a cache should record it, so that it does not use a cache that
+other rules made.
 
 The cache is valid when three things are true:
 

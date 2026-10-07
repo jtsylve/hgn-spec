@@ -48,9 +48,12 @@ The format follows eight decisions. Each document gives the details.
 2. **Planes of codes and scales.** A quantized payload keeps codes and scales
    apart, as whole planes or within each row. Code rows are contiguous and
    aligned, so kernels use 128-bit loads.
-3. **A codebook in each 4-bit tensor.** The `q4c` format stores sixteen `f32`
-   levels at the start of the payload. One decoder serves learned codebooks,
-   NF4, NVFP4 and the GGUF types Q4_0, IQ4_NL, IQ4_XS and IQ3_S.
+3. **Codebooks and rotations for low-bit tensors.** The `q4c` format stores
+   sixteen `f32` levels at the start of the payload. One decoder serves
+   learned codebooks, NF4, NVFP4 and the GGUF types Q4_0, IQ4_NL, IQ4_XS and
+   IQ3_S. The rotated formats `i4l`, `i4r` and `ht` keep a matrix in a
+   Hadamard-rotated basis, where 3-bit and 4-bit codes are more accurate.
+   `ht` computes its codebook from a trellis state.
 4. **One precision for each phase.** A tensor can have two copies: an 8-bit
    copy for token generation and a rotated 4-bit copy for prompt processing
    (see [Qwen3.8 27B tensors](TENSORS-27B.md)).
@@ -64,8 +67,9 @@ The format follows eight decisions. Each document gives the details.
    DeltaNet value heads are grouped, as in the original checkpoints. GGUF files
    change both; HGN does not.
 8. **Overlays and sidecars.** A small overlay file replaces selected tensors
-   with better-quantized copies. The MTP head and the vision encoder can be
-   separate files.
+   with better-quantized copies. The MTP head, the n-gram table and the vision
+   encoder can be separate files. Several checkpoints can share one n-gram
+   table file.
 
 ## Conventions
 
@@ -97,7 +101,9 @@ The format follows eight decisions. Each document gives the details.
 | Super-block | 256 consecutive values of one row |
 | Plane | A region of a payload that holds one kind of data for all rows |
 | Code | An integer that a decode rule maps to a value |
-| Codebook | The sixteen `f32` levels that a 4-bit code selects in `q4c` |
+| Codebook | The sixteen `f32` levels that a 4-bit code selects in `q4c`, or the function that gives an `ht` value from its trellis state |
+| Rotation vector | An `f16` tensor that scales the inputs or the outputs of a matrix in a rotated basis |
+| Tile | A block of 16 × 16 values of an `ht` matrix |
 | Value | The real number that a stored weight represents |
 | Reader | Software that opens HGN files for inference |
 | Writer | Software that produces HGN files |
@@ -138,12 +144,15 @@ the `version` field of the [header](CONTAINER.md#header).
 
 Every rule has at least one of these sources. Each document says which.
 
-- **The halogen-flash 0.13.5 reader.** Its observed behavior gives the
+- **The halogen-flash 0.16.2 reader.** Its observed behavior gives the
   container rules, the formats it reads, the tensor rules of Qwen3.8
-  Flash-Next and the GGUF import.
-- **The published files.** Their headers and tables (4,396 entries in six
+  Flash-Next and the GGUF import. 
+- **The published files.** Their headers and tables (8,427 entries in nine
   files) were checked against every container and size rule in this set. None
   failed. Payload samples were decoded and checked with structural tests.
+  Samples of the `ht`, `i4r` and `q6g64` payloads were decoded and compared
+  with the w4b copy of the same weights (see
+  [Numerics](NUMERICS.md#evidence-for-the-flash-next-v2-formats)).
 - **Independent references.** Each GGUF conversion rule was implemented from
   this text and compared with the dequantizer of the `gguf` Python package.
   Value conventions were compared with the public Unsloth GGUF files of both
@@ -166,10 +175,10 @@ lists every source, its license and its pinned revision.
 
 ## Document Revision
 
-*Version 1.0.1, 2026-09-24.*
+*Version 1.1.0, 2026-10-07.*
 
 Describes halogen's published checkpoints and the
-halogen-flash 0.13.5 reader. See the [change log](CHANGELOG.md).
+halogen-flash 0.16.2 reader. See the [change log](CHANGELOG.md).
 
 Copyright (c) 2026 Joe T. Sylve, Ph.D. <joe.sylve@gmail.com>.
 

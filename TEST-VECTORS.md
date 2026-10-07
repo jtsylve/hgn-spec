@@ -2,9 +2,12 @@
 
 These vectors come from a reference implementation that was written from this
 specification. Each conversion vector was also checked against the
-dequantizer of the `gguf` Python package (version 0.19.0). Hexadecimal byte
-strings list bytes in file order, 32 bytes to a line. Decimal values are
-exact: each is the decimal form of an `f32` value.
+dequantizer of the `gguf` Python package (version 0.19.0). So were the vectors
+of the GGUF table blocks. The `ht` tile vectors were also checked against the
+decode arithmetic of halogen-flash. The rotation vector was also
+checked with an independent matrix product. Hexadecimal byte strings list
+bytes in file order, 32 bytes to a line. Decimal values are exact: each is
+the decimal form of an `f32` value.
 
 ## A complete file
 
@@ -300,6 +303,66 @@ c1278de349af056bc1278de349af056b00000000000000000000000000000000
 | 6 | -1.125 |
 | 7 | 0.25 |
 
+## q5a variant 0 from Q5_0
+
+One GGUF Q5_0 block, `d = 0.125`. The code of value `i` is `(11i + 1) mod 32`,
+as in the Q5_1 vector above. The conversion is in
+[GGUF import](GGUF-IMPORT.md#type-rules).
+
+GGUF block (22 bytes):
+
+```text
+00302469db9611cc7722dd8833ee9944ffaa5500bb66
+```
+
+HGN payload, shape `[1, 32]`, 144 bytes. It is equal to the Q5_1 payload
+above, except for the plane-1 record. The record holds `d`, then the zero
+`−16 × d = −2.0` (`f16` bits `0xC000`):
+
+```text
+c1278de349af056bc1278de349af056b00000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+2469db9600000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+003000c0000000000000000000000000
+```
+
+| Position | Value |
+| ---: | ---: |
+| 0 | -1.875 |
+| 1 | -0.5 |
+| 2 | 0.875 |
+| 3 | -1.75 |
+| 4 | -0.375 |
+| 5 | 1.0 |
+| 6 | -1.625 |
+| 7 | -0.25 |
+
+The zero must be a finite `f16`. These scales show the limit:
+
+| `d` bits | `d` | Zero bits | Result |
+| --- | ---: | --- | --- |
+| `0x6BFF` | 4094.0 | `0xFBFF` (−65504.0) | Accepted |
+| `0x6C00` | 4096.0 | — | Refused |
+| `0x7C00` | infinity | — | Refused |
+| `0x0001` | 5.960464477539063e-08 | `0x8010` | Accepted |
+| `0x0000` | 0.0 | `0x8000` (−0.0) | Accepted |
+| `0x8000` | -0.0 | `0x0000` (+0.0) | Accepted |
+
+## GGUF table blocks
+
+The stores `q8_0`, `q5_0` and `q5_1` keep the GGUF blocks of the n-gram table
+unchanged. A table row holds five blocks. These blocks are the first block of
+a row:
+
+| Store | Block | Values 0–3 |
+| --- | --- | --- |
+| `q8_0` | The first block of the [Q8_0 vector](#q8s32-from-q8_0): `1f2181a6…b6db00`, 34 bytes | -1.2702713012695312, -0.9001922607421875, -0.5301132202148438, -0.1600341796875 |
+| `q5_0` | The block of the [Q5_0 vector](#q5a-variant-0-from-q5_0), 22 bytes | -1.875, -0.5, 0.875, -1.75 |
+| `q5_1` | The block of the [Q5_1 vector](#q5a-variant-0-from-q5_1), 24 bytes | -1.375, 0.0, 1.375, -1.25 |
+
+Each value is equal to the value of the `gguf` package for the same block.
+
 ## K-quant scale unpacking
 
 The 12 packed bytes `8142c304458607c8192a3b4c` unpack to these pairs:
@@ -317,6 +380,25 @@ The 12 packed bytes `8142c304458607c8192a3b4c` unpack to these pairs:
 
 As plane-1 bytes of a `q4a` or `q5a` variant 1 row:
 `010502060307040829111a223b030c34`.
+
+## Affine out_proj to bf16
+
+An affine `out_proj` becomes `bf16` (see [GGUF import](GGUF-IMPORT.md#type-rules)).
+This group of a Q5_1 block has `d = 0.0999755859375` (`f16` bits `0x2E66`)
+and `m = −1.0` (`0xBC00`). The `f32` value is `code × d + m` with one
+rounding. Then the value is rounded to `bf16`, to nearest with ties to even.
+
+| Code | `f32` value | `bf16` bits |
+| ---: | ---: | --- |
+| 0 | -1.0 | `0xBF80` |
+| 1 | -0.9000244140625 | `0xBF66` |
+| 2 | -0.800048828125 | `0xBF4D` |
+| 16 | 0.599609375 | `0x3F1A` |
+| 31 | 2.0992431640625 | `0x4006` |
+
+These `f32` values are exact, so the `bf16` rounding is the only rounding.
+0.599609375 is halfway between `0x3F19` and `0x3F1A`; the tie goes to the even
+result `0x3F1A`.
 
 ## fp8r
 
@@ -362,6 +444,147 @@ The SHA-256 of all 256 values as
 little-endian `f32`, each rounded from the exact value to nearest, is
 `5aaa41202e89b89ceb981fa54735eb0496af0445d28c9523fe76544fc34d30b2`.
 
+## q6g64
+
+One row of 64 values (`K = 64`). The code of value `k` is `(37k + 11) mod
+64`. The record holds the scale 0.03125 (`f16` bits `0x2800`) and the bias
+−1.0 (`0xBC00`). The row is `pad(52, 16) = 64` bytes: 32 bytes of low bits,
+16 bytes of high bits, one record and 12 zero bytes.
+
+```text
+0ba54fe9832dc7610ba54fe9832dc7610ba54fe9832dc7610ba54fe9832dc761
+dc21b7d82176c82d768b1d728bdc6287002800bc000000000000000000000000
+```
+
+| Position | Code | Value |
+| ---: | ---: | ---: |
+| 0 | 11 | -0.65625 |
+| 1 | 48 | 0.5 |
+| 2 | 21 | -0.34375 |
+| 3 | 58 | 0.8125 |
+| 4 | 31 | -0.03125 |
+| 5 | 4 | -0.875 |
+| 6 | 41 | 0.28125 |
+| 7 | 14 | -0.5625 |
+
+Code 0 is at position 17, and code 63 is at position 36.
+
+## ht codebook
+
+The codebook value `T` for some 16-bit states:
+
+| State | `a` | `T` | `f16` bits |
+| --- | ---: | ---: | --- |
+| `0x0000` | 0 | -3.453125 | `0xC2E8` |
+| `0x0001` | 605 | 0.64111328125 | `0x3921` |
+| `0x0002` | 444 | -0.448486328125 | `0xB72D` |
+| `0x1234` | 425 | -0.5771484375 | `0xB89E` |
+| `0x8000` | 382 | -0.8681640625 | `0xBAF2` |
+| `0xABCD` | 316 | -1.314453125 | `0xBD42` |
+| `0xFFFF` | 414 | -0.6513671875 | `0xB936` |
+
+Over all 65,536 states, the codebook has 913 different values. The smallest is
+−3.453125 and the largest is 3.34765625.
+
+## ht tile
+
+One tile with `b = 4`. Word `j` of the tile, from 0 to 31, is `(0x9E3779B9 ×
+(j + 1)) mod 2³²`. Payload (128 bytes):
+
+```text
+b979379e72f36e3c2b6da6dae4e6dd789d60151756da4cb50f548453c8cdbbf1
+8147f38f3ac12a2ef33a62ccacb4996a652ed1081ea808a7d7214045909b77e3
+4915af81028fe61fbb081ebe7482555c2dfc8cfae675c4989feffb36586933d5
+11e36a73ca5ca21183d6d9af3c50114ef5c948ecae43808a67bdb7282037efc6
+```
+
+| Value `i` | (row, column) | State | `T` | `f16` bits |
+| ---: | --- | --- | ---: | --- |
+| 0 | (0, 0) | `0x7209` | 1.48046875 | `0x3DEC` |
+| 1 | (0, 1) | `0x209E` | 1.5888671875 | `0x3E5B` |
+| 2 | (0, 2) | `0x09E3` | -0.32666015625 | `0xB53A` |
+| 7 | (0, 7) | `0x79B9` | 0.09967041015625 | `0x2E61` |
+| 8 | (1, 0) | `0x9B93` | 0.1064453125 | `0x2ED0` |
+| 127 | (15, 7) | `0x9B90` | 1.642578125 | `0x3E92` |
+| 128 | (0, 8) | `0xB908` | -1.341796875 | `0xBD5E` |
+| 255 | (15, 15) | `0x3720` | 1.568359375 | `0x3E46` |
+
+The state of value 0 takes the last 12 bits of the stream (`0x720`, from the
+word `0xC6EF3720`) and the first 4 bits (`0x9`). The SHA-256 of the 256 `f16`
+bit patterns, little-endian, in the order of the value index `i`, is
+`32ae1812fa6a2dc63150621a31ec916757607f03eb9058d51923ab7b92a78d9b`.
+
+The same words with `b = 3` give a tile of 24 words (96 bytes): the first 96
+bytes above.
+
+| Value `i` | (row, column) | State | `T` | `f16` bits |
+| ---: | --- | --- | ---: | --- |
+| 0 | (0, 0) | `0x4AC4` | -0.1236572265625 | `0xAFEA` |
+| 1 | (0, 1) | `0x5627` | 1.7578125 | `0x3F08` |
+| 2 | (0, 2) | `0xB13C` | -0.61083984375 | `0xB8E3` |
+| 7 | (0, 7) | `0x3779` | -0.1981201171875 | `0xB257` |
+| 8 | (1, 0) | `0xBBCD` | -0.1236572265625 | `0xAFEA` |
+| 127 | (15, 7) | `0xB4AC` | -0.495849609375 | `0xB7EF` |
+| 128 | (0, 8) | `0xA560` | 1.2431640625 | `0x3CF9` |
+| 255 | (15, 15) | `0x6958` | 0.74267578125 | `0x39F1` |
+
+The SHA-256 of its 256 `f16` bit patterns, in the same order, is
+`415420d5d59d5f2b288f563473b597b207e94852290120291887286c5f00555b`.
+
+## The 128-point rotation
+
+One 2-D `ht` tensor of shape `[128, 128]`, variant `0x1208` (`b = 4`). The
+payload is 8,192 bytes. Word `w` of the payload, from 0 to 2047, is
+`(0x9E3779B9 × (w + 1)) mod 2³²`, so its first tile is the 4-bit tile above.
+The SHA-256 of the payload is
+`cfab929290971c665ca08cb3222f626e41bfb1b013837ced3b7178136b8f2ca1`.
+
+The rotation vectors are exact `f16` values:
+
+- `su[c]` is −1 when `(5c) mod 7` is less than 3, else +1.
+- `sv[r]` is `(8 + (r mod 8)) / 512`, negated when `r mod 3` is 0. So
+  `sv[0..3]` is −0.015625, 0.017578125, 0.01953125 and −0.021484375.
+
+| (row, column) | Value |
+| --- | ---: |
+| (0, 0) | -0.0005001630634069443 |
+| (0, 1) | -0.0008721128106117249 |
+| (1, 0) | -0.021587662398815155 |
+| (1, 1) | 0.006169011816382408 |
+| (64, 64) | -0.002170378342270851 |
+| (127, 127) | 0.003455530386418104 |
+
+The SHA-256 of all 16,384 values as little-endian `f32`, in row-major order,
+each rounded from the exact value to nearest with ties to even, is
+`1a1f0f4bee42296506b55f20ae44b69a6b558ee16bf5c70ec9519fa52cbfc1b2`.
+
+## i4r
+
+One row of 128 values of an `i4r` tensor: one group. The nibble of value `k`
+is `(5k + 3) mod 16`. The scale is 0.015625 (`f16` bits `0x2400`, bytes
+`0024`). The 64 code bytes of the row:
+
+```text
+832dc7610ba54fe9832dc7610ba54fe9832dc7610ba54fe9832dc7610ba54fe9
+832dc7610ba54fe9832dc7610ba54fe9832dc7610ba54fe9832dc7610ba54fe9
+```
+
+| Position | Nibble | Code | Stored number |
+| ---: | ---: | ---: | ---: |
+| 0 | 3 | -5 | -0.078125 |
+| 1 | 8 | 0 | 0.0 |
+| 2 | 13 | 5 | 0.078125 |
+| 3 | 2 | -6 | -0.09375 |
+| 4 | 7 | -1 | -0.015625 |
+| 5 | 12 | 4 | 0.0625 |
+| 6 | 1 | -7 | -0.109375 |
+| 7 | 6 | -2 | -0.03125 |
+
+The code is offset binary: nibble 8 is code 0, and nibble 0 is code −8. A
+two's-complement reading gives wrong numbers without an error. The values of
+the weights come from the [128-point
+rotation](STORAGE.md#the-128-point-rotation) of these stored numbers.
+
 ## Head permutation
 
 HGN value head `h` is GGUF value head `t(h)`:
@@ -384,7 +607,7 @@ HGN value head `h` is GGUF value head `t(h)`:
 ## Tensor sizes
 
 Payload sizes of the large Flash-Next tensors. The sizes marked "published"
-occur in the published checkpoint or its overlay.
+occur in a published file.
 
 | Tensor | Store | Shape | Bytes |
 | --- | --- | --- | ---: |
@@ -392,17 +615,38 @@ occur in the published checkpoint or its overlay.
 | `experts.gate_up_proj` | `q4a` variant 1 | `[512,1280,2560]` | 975,175,680 |
 | `experts.gate_up_proj` | `q5a` variant 0 | `[512,1280,2560]` | 1,258,291,200 |
 | `experts.gate_up_proj` | `q5a` variant 1 | `[512,1280,2560]` | 1,184,890,880 |
+| `experts.gate_up_proj` | `ht`, `b = 3` | `[512,1280,2560]` | 629,145,600 (published) |
+| `experts.gate_up_proj` | `ht`, `b = 4` | `[512,1280,2560]` | 838,860,800 (published) |
+| `experts.gate_up_proj` | `i4r` | `[512,1280,2560]` | 865,075,200 (published) |
 | `experts.down_proj` | `q4c` | `[512,2560,640]` | 482,345,024 (published) |
 | `experts.down_proj` | `q8s32` | `[512,2560,640]` | 901,775,360 |
 | `experts.down_proj` | `q5a` variant 0 | `[512,2560,640]` | 629,145,600 |
+| `experts.down_proj` | `ht`, `b = 3` | `[512,2560,640]` | 314,572,800 (published) |
+| `experts.down_proj` | `ht`, `b = 4` | `[512,2560,640]` | 419,430,400 (published) |
+| `experts.down_proj` | `i4r` | `[512,2560,640]` | 432,537,600 (published) |
 | `linear_attn.in_proj_qkv` | `q4c` | `[10240,2560]` | 14,745,664 (published) |
 | `linear_attn.in_proj_qkv` | `q8s32` | `[10240,2560]` | 27,852,800 |
+| `linear_attn.in_proj_qkv` | `ht`, `b = 4` | `[10240,2560]` | 13,107,200 (published) |
+| `linear_attn.out_proj` | `bf16` | `[2560,6144]` | 31,457,280 |
 | `self_attn.q_proj` | `q4c` | `[12288,2560]` | 17,694,784 (published) |
+| `self_attn.q_proj` | `ht`, `b = 4` | `[12288,2560]` | 15,728,640 (published) |
 | `lm_head` | `q4c` | `[248320,2560]` | 357,580,864 (published) |
 | `embed_tokens` | `q4c` | `[248320,2560]` | 357,580,864 (published) |
 | `lm_head` | `q6k` | `[248320,2560]` | 521,472,000 |
 | `lm_head` | `q8s32` | `[248320,2560]` | 675,430,400 |
+| `lm_head` | `ht`, `b = 4` | `[248320,2560]` | 317,849,600 (published) |
 | `self_attn.o_proj` | `q8g64` | `[2560,6144]` | 16,711,680 (published) |
+| `input_mix_weight_down` | `q6g64` | `[320,10240]` | 2,662,400 (published) |
+| `input_mix_weight_up` | `q6g64` | `[10240,320]` | 2,785,280 (published) |
+| `block_inject_weight` | `q6g64` | `[4,10240]` | 33,280 (published) |
+| `ngram_embedding`, `R` = 2,500,012 | `fp8g` | `[128,2500012,160]` | 51,200,245,764 (published) |
+| `ngram_embedding`, `R` = 2,500,012 | `iq4nl` | `[128,2500012,160]` | 28,800,138,240 |
+| `ngram_embedding`, `R` = 2,500,012 | `q8_0` | `[128,2500012,160]` | 54,400,261,120 |
+| `ngram_embedding`, `R` = 2,500,012 | `q5_0` | `[128,2500012,160]` | 35,200,168,960 |
+| `ngram_embedding`, `R` = 2,500,012 | `q5_1` | `[128,2500012,160]` | 38,400,184,320 |
+
+`experts.down_proj` as `q5a` variant 0 comes from Q5_1 or Q5_0. A `bf16`
+`out_proj` comes from an affine GGUF `out_proj`.
 
 ## Published files
 
@@ -410,8 +654,10 @@ Measured from the published repositories at these revisions:
 
 | Repository | Revision |
 | --- | --- |
-| `peonist-ai/halogen-qwen3.8-flash-next` | `e053f488b120b99ed2525e6ac99f68c51b3b6179` |
+| `peonist-ai/halogen-qwen3.8-flash-next` | `6e1aa1acda75bd8a3bb9043b1545f83187cb6ded` |
 | `peonist-ai/halogen-qwen3.8-27b` | `800ec932fc4a83ddd18b83d293cfd147946e77f9` |
+
+
 
 | File | Bytes | Entries | Identity | Payload start |
 | --- | ---: | ---: | --- | ---: |
@@ -421,6 +667,9 @@ Measured from the published repositories at these revisions:
 | `qwen38-flash-next-mtp.hgn` | 1,523,566,720 | 31 | `qwen3.8-flash-next-mtp` | 5,120 |
 | `qwen38-flash-next-vision.hgn` | 897,916,416 | 333 | `qwen3.8-flash-next-vision` | 53,440 |
 | `qwen3.8-27b-p1w4d-d2.hgn` | 35,865,565,184 | 1,352 | `Qwen3.8-27B-p1-d2` | 216,448 |
+| `qwen38-flash-next-v2.hgn` | 66,687,678,432 | 2,015 | `qwen3.8-flash-next-v2` | 322,560 |
+| `qwen38-flash-next-ht43.hgn` | 57,618,253,792 | 2,015 | `qwen3.8-flash-next-ht43` | 322,560 |
+| `qwen38-flash-next-ngram.hgn` | 51,200,246,144 | 1 | `qwen3.8-flash-next-ngram` | 320 |
 
 Stores in each file:
 
@@ -432,6 +681,9 @@ Stores in each file:
 | `qwen38-flash-next-mtp.hgn` | `q8g64` 18, `bf16` 10, `q4c` v2 3 |
 | `qwen38-flash-next-vision.hgn` | `bf16` 333 |
 | `qwen3.8-27b-p1w4d-d2.hgn` | `bf16` 493, `i4l` 400, `fp8r` 233, `q4c` v0 168, `q4c` v1 54, `i32` 2, `f32` 2 |
+| `qwen38-flash-next-v2.hgn` | `f16` 818, `bf16` 353, `ht` `0x1208` 313, `q6g64` 290, `q4c` v2 124, `i4r` 96, `q8g64` 18, `i64` 3 |
+| `qwen38-flash-next-ht43.hgn` | `f16` 818, `ht` `0x1208` 361, `bf16` 353, `q8g64` 308, `q4c` v2 124, `ht` `0x1206` 48, `i64` 3 |
+| `qwen38-flash-next-ngram.hgn` | `fp8g` 1 |
 
 SHA-256 of the header and table (bytes 0 to the end of the table), for a
 reader test that does not need the payloads:
@@ -444,8 +696,33 @@ reader test that does not need the payloads:
 | `qwen38-flash-next-mtp.hgn` | `8bb91b381a490b8595ae9a3949ce4226b2c4ecbdcb54a28570091facd47d5a8f` |
 | `qwen38-flash-next-vision.hgn` | `2cd308a09a4b69d46875cfa2d6167663d7c8ca26fd17738ad011874ce4d0e8fc` |
 | `qwen3.8-27b-p1w4d-d2.hgn` | `788082dc2b4eb0f6a89daac2d928aaceed9a5afe48411baebbf6c1892402cd92` |
+| `qwen38-flash-next-v2.hgn` | `6dd6e4fd5afe6b5c657a4c96f8398253a96cdb8820f8b1449a97350462705020` |
+| `qwen38-flash-next-ht43.hgn` | `657223daf9d4675ef92cf37e254ca35fbe9355d4f0ea26ced4c9e73854aa0ca6` |
+| `qwen38-flash-next-ngram.hgn` | `52a6dc997be8909b8814f1509b3a10a6e92f3ab299da0a87e78bf7a987f578fd` |
 
-The PLE index vectors of the Flash-Next checkpoint:
+These facts hold for the nine files:
+
+- Every one of the 8,427 entries has the size of the
+  [size rule](STORAGE.md#size-summary) of its store. Every payload offset is
+  a multiple of 64. In every file, the data offset field is equal to the
+  payload start.
+- Seven files end at their last payload, rounded up to 64. `v2` and `ht43`
+  end at the end of their last payload, 32 bytes before the next multiple of
+  64.
+- The n-gram file holds one entry, `layers.1.ple.ngram_embedding.weight`.
+  Its store, shape, size, checksum (`0xF682E517`) and variant are equal to
+  those of the w4b table entry.
+- `v2` and `ht43` hold each name of w4b except the n-gram table, and 818
+  rotation vectors. They hold no n-gram table.
+- In `v2` and in `ht43`, each `bf16`, `i64` and `q4c` entry (480 in each file)
+  is equal to the w4b entry of the same name: store, shape, size, checksum and
+  variant.
+- The 31 `mtp.` entries of `v2` and of `ht43` are equal to the entries of the
+  MTP head file.
+
+The PLE index vectors of the Flash-Next checkpoints. The values were measured
+in w4b. In `v2` and `ht43`, the entries of the three vectors, checksums
+included, are equal to the w4b entries.
 
 | Tensor | Values |
 | --- | --- |

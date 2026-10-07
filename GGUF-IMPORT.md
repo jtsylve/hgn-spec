@@ -3,13 +3,25 @@
 Halogen-flash reads a Qwen3.8 Flash-Next GGUF file in two ways. It can convert
 the file into memory at start-up, or it can write a complete HGN file. Both ways
 use the rules in this document. The rules also show how to keep the HGN layouts
-in an engine that loads GGUF files.
+in an engine that loads GGUF files. 
 
-The importer follows one principle: **it refuses rather than guesses.** Three
-things stop the import with a message: an unknown tensor name, a type without
-an exact conversion and a shape that the kernels do not expect. A checkpoint
-that loads but computes wrong values is harder to find than one that does not
-load.
+The importer follows one principle: **it refuses rather than guesses.** Four
+things stop the import with a message:
+
+- an unknown tensor name
+- a type without an exact conversion
+- a type that no kernel reads for that tensor
+- a shape that the kernels do not expect
+
+Some value checks run while a payload is converted, so a value can also stop
+the import (see [Float tensors](#float-tensors),
+[ssm_a to A_log](#ssm_a-to-a_log) and
+[Q5_0 to q5a variant 0](#q5_0-to-q5a-variant-0)). A checkpoint that loads but
+computes wrong values is harder to find than one that does not load.
+
+Most conversions are exact. The IQ4_XS and IQ3_S conversions round each group
+scale to `f16`. The conversion of an affine `out_proj` to `bf16` rounds each
+value (see [Affine out_proj to bf16](#affine-out_proj-to-bf16)).
 
 ## Preconditions
 
@@ -44,7 +56,7 @@ Every tensor of the file is checked, before any payload is read.
 
 | GGUF type | HGN store | Variant | Exact | `K` rule |
 | --- | --- | ---: | --- | --- |
-| BF16 | `bf16` | 0 | Yes, bytes copied | — |
+| BF16 | `bf16` | 0 | Yes. Bytes copied, or converted as a [float tensor](#float-tensors) | — |
 | F32 | `bf16` | 0 | Yes, or refused (see [Float tensors](#float-tensors)) | — |
 | F16 | `bf16` | 0 | Yes, or refused | — |
 | Q8_0 | `q8s32` | 0 | Yes | multiple of 64 |
@@ -52,31 +64,32 @@ Every tensor of the file is checked, before any payload is read.
 | IQ4_NL | `q4c` | 2 | Yes | multiple of 32 |
 | IQ4_XS | `q4c` | 2 | Codes yes; scales rounded to `f16` | multiple of 256 |
 | IQ3_S | `q4c` | 2 | Codes yes; scales rounded to `f16` | multiple of 256 |
+| Q5_0 | `q5a` | 0 | Yes, or refused (see [Q5_0 to q5a variant 0](#q5_0-to-q5a-variant-0)) | multiple of 32 |
 | Q5_1 | `q5a` | 0 | Yes | multiple of 32 |
 | Q4_K | `q4a` | 1 | Yes | multiple of 256 |
 | Q5_K | `q5a` | 1 | Yes | multiple of 256 |
 | Q6_K | `q6k` | 0 | Yes, bytes copied | multiple of 256 |
 
 These types are refused anywhere in the file, because they have no exact
-conversion: Q4_1, Q5_0, Q2_K, Q3_K, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ1_S,
-IQ1_M, TQ1_0, TQ2_0 and MXFP4. Q8_1, Q8_K, I8, I16, I32, I64 and F64 have no
-rule and are also refused.
+conversion: Q4_1, Q2_K, Q3_K, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ1_S, IQ1_M,
+TQ1_0, TQ2_0 and MXFP4. Q8_1, Q8_K, I8, I16, I32, I64 and F64 have no rule and
+are also refused. 
 
 Some tensors have narrower rules:
 
 | Tensor | Rule |
 | --- | --- |
-| Fused expert gate and up | Q4_0, IQ4_NL, IQ4_XS or IQ3_S give `q4c`. Q5_1, Q4_K or Q5_K give the affine form. Other types are refused. Both halves must have the same type |
+| Fused expert gate and up | Q4_0, IQ4_NL, IQ4_XS or IQ3_S give `q4c`. Q4_K gives `q4a` variant 1, and Q5_K gives `q5a` variant 1. Other types are refused, Q5_0 and Q5_1 included. Both halves must have the same type |
+| Expert down (`ffn_down_exps`) | Q4_0, IQ4_NL, IQ4_XS or IQ3_S give `q4c`. Q8_0 gives `q8s32`. Q5_0 and Q5_1 give `q5a` variant 0. Other types are refused |
 | Indexer query and key | BF16 only |
-| `ssm_a` | F32 only |
-| `ssm_out` (`out_proj`) | Not Q6_K, Q5_1, Q4_K or Q5_K, because the [head reorder](#head-reorder) cannot move their blocks |
-| `per_layer_token_embd` | IQ4_NL only, with GGUF dimensions `[160, 128 × R]` |
+| `ssm_a` | F32 only. F16 and BF16 are refused |
+| `ssm_out` (`out_proj`) | Not Q6_K, because the [head reorder](#head-reorder) cannot move its blocks. Q5_0, Q5_1, Q4_K and Q5_K become `bf16` (see [Affine out_proj to bf16](#affine-out_proj-to-bf16)) |
+| `per_layer_token_embd` | IQ4_NL, Q8_0, Q5_0 or Q5_1, with GGUF dimensions `[160, 128 × R]`. The size must be `128 × R` rows of 90, 170, 110 or 120 bytes, in that type order |
 
-The importer accepts some types that the reader then refuses. For the expert
-gate and up tensor, the reader accepts only the k-scale affine form. For the
-expert down tensor, it accepts only `q5a` in the pair form (see
-[Qwen3.8 Flash-Next tensors](TENSORS.md#fused-experts)). So a file with Q5_1 expert gate
-and up projections converts, but does not load.
+Every type that the importer accepts for an expert tensor has an expert
+kernel in halogen-flash (see
+[Qwen3.8 Flash-Next tensors](TENSORS.md#fused-experts)). So an expert tensor
+that converts also loads. 
 
 ## Worked example
 
@@ -94,7 +107,7 @@ Its types convert as follows. Every conversion in it is exact.
 | `indexer.q_proj`, `indexer.k_proj` | BF16 | `bf16`, joined |
 | `ssm_alpha`, `ssm_beta`, `ssm_conv1d`, `ssm_dt.bias`, `ssm_norm`, `ffn_gate_inp`, `ffn_gate_inp_shexp`, `hc_*_inject`, all norms | F32 | `bf16` |
 | `ssm_a` | F32 | `f32` (`A_log`) |
-| `per_layer_token_embd` | IQ4_NL, `[160, 320001536]` | The n-gram table, unchanged |
+| `per_layer_token_embd` | IQ4_NL, `[160, 320001536]` | `iq4nl`, the n-gram table, unchanged |
 
 The dense projections are Q8_0 in this build, so the converted trunk is larger
 than the native checkpoint, which uses 4-bit codes for them.
@@ -313,6 +326,38 @@ For block `g` of a row:
 GGUF defines `value = code × d + m`. HGN defines `value = code × scale +
 zero`. The conversion is exact.
 
+### Q5_0 to q5a variant 0
+
+A GGUF block of 32 values is 22 bytes:
+
+| Offset | Size | Contents |
+| --- | --- | --- |
+| 0 | 2 | `f16` scale `d` |
+| 2 | 4 | `u32` `qh`: bit `i` is bit 4 of the code of value `i` |
+| 6 | 16 | Low 4 bits of the codes, in the Q4_0 nibble order |
+
+GGUF defines `value = (code − 16) × d`. The pair form of `q5a` needs an
+explicit zero, so the importer stores `z = −16 × d`.
+
+For block `g` of a row:
+
+1. Compute `z = −16 × d` in `f32`. The product is exact.
+2. Round `z` to `f16`, to nearest with ties to even.
+3. The block fails if `d` is not finite, or if the rounded `z` is not equal to
+   `z`. This occurs when `|d|` is 4096 or more.
+4. Copy `d`, then the rounded `z`, to the plane-1 record of group `g`.
+5. Copy `qh` unchanged to high-plane word `g`.
+6. Re-pack the 16 code bytes as for Q4_0.
+
+When one or more blocks of a row fail, the importer stops the import. The
+message names the tensor and the row, and gives the count of failed blocks.
+The importer does not round a zero to make it fit.
+
+Every accepted block gives `code × d + z = (code − 16) × d` exactly, so the
+value is the GGUF value. The sign of a zero result can differ. HGN gives +0
+for every zero value. GGUF gives −0 when the product `(code − 16) × d` has a
+negative sign, for example code 16 with a negative `d`.
+
 ### Q4_K and Q5_K to q4a and q5a variant 1
 
 A GGUF Q4_K super-block of 256 values is 144 bytes. A Q5_K super-block is 176
@@ -343,26 +388,73 @@ For super-block `s` of a row:
 GGUF defines `value = d × sc × code − dmin × m`. HGN computes the same numbers
 (see [Numerics](NUMERICS.md)). The conversion is exact.
 
+### Affine out_proj to bf16
+
+Halogen-flash converts an `ssm_out` (`out_proj`) of type Q5_0, Q5_1,
+Q4_K or Q5_K to `bf16`. The variant is 0, the shape is `[2560, 6144]` and the
+payload is 31,457,280 bytes. Other tensors of these types keep the affine
+stores.
+
+For each row:
+
+1. Convert the row to the `q4a` or `q5a` planes with the rule of its type.
+   The Q5_0 refusal applies.
+2. For each value, compute `c × scale + zero` in `f32` with one rounding. The
+   product is exact, so only the sum rounds. `scale` and `zero` are those of
+   [Numerics](NUMERICS.md#the-value-of-a-stored-weight):
+   - Q5_0 and Q5_1 (variant 0): `scale = f16(d)`. `zero` is the rounded `z`
+     of Q5_0 or the `m` of Q5_1, as `f16`.
+   - Q4_K and Q5_K (variant 1): `scale = f16(d) × sc` and
+     `zero = −(f16(dmin) × m)`.
+3. Round the `f32` value to `bf16`, to nearest with ties to even.
+4. Apply the [head reorder](#head-reorder). Destination block `h` of 128
+   columns takes source block `t(h)`.
+
+The `f32` value of step 2 is equal to the GGUF value. Step 3 rounds each
+value. The result differs from the GGUF value by at most half a `bf16` unit in
+the last place.
+
+To get the same bytes as halogen-flash, round in two steps: first to `f32`,
+then to `bf16`. An importer that must be exact can keep Q5_0 and Q5_1 on
+`out_proj` in `q5a` variant 0 and move whole groups (see
+[Head reorder](#head-reorder)). Its bytes then differ from those of
+halogen-flash. 
+
 ### Q6_K and BF16
 
 The bytes are copied unchanged. A head reorder moves whole rows or whole
 column blocks (see [Head reorder](#head-reorder)).
 
+A BF16 tensor is copied only when it needs no change of value or shape. The
+tensors of the next section take the float path instead.
+
 ### Float tensors
 
-An F32 or F16 tensor becomes `bf16`. F16 values are first widened to `f32`.
-Then:
+An F32, F16 or BF16 tensor becomes `bf16` by these steps. A BF16 tensor takes
+them only when its HGN name ends with one of 11 suffixes:
 
-1. Subtract 1.0 in `f32` from every value of a
+- the eight suffixes of the [norm gains with an offset](#norm-offsets)
+- `linear_attn.dt_bias`
+- `conv1d.weight`
+- `shared_expert_gate.weight`
+
+The steps:
+
+1. Widen each value to `f32`. An F16 value converts exactly. A BF16 value
+   becomes the upper 16 bits of an `f32` value with zero low bits.
+2. Subtract 1.0 in `f32` from every value of a
    [norm gain with an offset](#norm-offsets).
-2. Apply the [head reorder](#head-reorder) when the tensor has one.
-3. Check that the low 16 bits of every `f32` value are zero. If one value
+3. Apply the [head reorder](#head-reorder) when the tensor has one.
+4. Check that the low 16 bits of every `f32` value are zero. If one value
    fails, refuse the tensor. The message gives the count of failed values.
-4. Store the upper 16 bits of each value.
+5. Store the upper 16 bits of each value.
 
-The check in step 3 makes the conversion exact. A value that is not already
+The check in step 4 makes the conversion exact. A value that is not already
 a `bf16` value shows a transform that the importer does not know, or an F16
-weight that was never `bf16`. The importer does not round it.
+weight that was never `bf16`. The importer does not round it. A BF16 norm gain
+can also fail the check, because `x − 1` is not always a `bf16` value.
+
+
 
 ### ssm_a to A_log
 
@@ -371,7 +463,9 @@ GGUF stores `A`, which is negative. HGN stores `log(−A)` as `f32`.
 1. Refuse the tensor if any value is zero or positive. Check all values
    first, so that no partial result is written.
 2. Apply the head reorder: HGN value `h` comes from GGUF value `t(h)`.
-3. Compute `log(−A)` in `f32` arithmetic.
+3. Compute `log(−A)`. Halogen-flash widens `−A` to binary64, takes the
+   natural logarithm in binary64 with the system math library and rounds the
+   result to `f32`.
 
 Math libraries can differ by one unit in the last place. The result is
 therefore not guaranteed to be bit-identical between importers.
@@ -402,10 +496,11 @@ tensors by the end of their HGN name:
 
 `linear_attn.norm.weight` is not in the list.
 
-Halogen-flash subtracts the offset only when it converts an F32 or F16 tensor. A
-norm gain stored as BF16 in the GGUF file keeps its offset. GGUF writers store
-norm gains as F32, so this does not occur in known files. A new importer
-should subtract the offset for every source type.
+Halogen-flash subtracts the offset when it converts an F32, F16 or BF16
+tensor (see [Float tensors](#float-tensors)). It does not subtract the offset
+from a quantized norm gain. GGUF writers store norm gains as F32, so this case
+does not occur in known files. A new importer should subtract the offset for every source
+type.
 
 ## Head reorder
 
@@ -433,12 +528,14 @@ must move whole groups. A block of 128 columns is 4 groups of 32 values, so:
 - `bf16`: for each row, move 48 blocks of 256 bytes.
 
 Q6_K and the K-quants group 256 values, so a 128-column block splits a group.
-The importer refuses these types on `out_proj`. It also refuses Q5_1 there,
-although a Q5_1 group is 32 values wide. A new importer can support Q5_1 on
-`out_proj` by moving whole groups, as for `q4c`.
+The importer refuses Q6_K on `out_proj`. It converts Q4_K, Q5_K, Q5_0 and Q5_1
+on `out_proj` to `bf16` and then moves the `bf16` blocks (see
+[Affine out_proj to bf16](#affine-out_proj-to-bf16)). A Q5_0 or Q5_1 group is
+32 values wide. So a new importer can keep these two types on `out_proj` in
+`q5a` variant 0 and move whole groups, as for `q4c`.
 
-Halogen-flash 0.13.5 skips the reorder for some source types. A new importer
-must apply the reorder for every type.
+Halogen-flash applies the reorder for every accepted type. A new importer
+must do the same.
 
 ## Output order
 
@@ -461,18 +558,33 @@ strings. Two different tensors never have equal keys, so the order is total.
 The importer makes one of two outputs.
 
 **In memory, at start-up.** The result holds every converted tensor. It does
-not hold the n-gram table or the MTP head tensors. Halogen-flash maps the n-gram
-table directly from the GGUF shard, and it opens the MTP head file as a
-second checkpoint. The payloads follow the output order, each at a multiple of
-64, in one anonymous memory region. The [repack
-cache](CONTAINER.md#repack-cache) stores this result.
+not hold the n-gram table or the MTP head tensors. Halogen-flash checks the
+type, the shape and the size of the n-gram table with the rule of
+[Type rules](#type-rules). Then it maps the table directly from the GGUF
+shard. It opens the MTP head file as a second checkpoint. The payloads follow
+the output order, each at a multiple of 64, in one anonymous memory region.
+The [repack cache](CONTAINER.md#repack-cache) stores this result.
 
 **A complete HGN file.** The file holds every converted tensor, the n-gram
 table (unless the operator excludes it) and the MTP head tensors (when the
-operator names a head file). The n-gram table bytes are copied unchanged. The
-identity is `qwen3.8-flash-next-gguf` and the version is 2.
+operator names a head file). The identity is `qwen3.8-flash-next-gguf` and the
+version is 2.
 
-A complete file for serving must hold the n-gram table.
+The n-gram table bytes are copied unchanged. The shape is `[128, R, 160]` and
+the variant is 0. The store follows the GGUF type:
+
+| GGUF type | HGN store | Bytes for each row |
+| --- | --- | ---: |
+| IQ4_NL | `iq4nl` | 90 |
+| Q8_0 | `q8_0` | 170 |
+| Q5_0 | `q5_0` | 110 |
+| Q5_1 | `q5_1` | 120 |
+
+The layouts are in [iq4nl](STORAGE.md#iq4nl-gguf-iq4_nl-table) and
+[q8_0, q5_0 and q5_1](STORAGE.md#q8_0-q5_0-and-q5_1-gguf-table-blocks).
+
+A file without the n-gram table can serve only together with a separate
+[n-gram table file](CONTAINER.md#n-gram-table-file).
 
 ## Reproducibility
 
@@ -505,6 +617,7 @@ GGUF bytes.
 | --- | --- | --- |
 | `q8s32` | Q8_0 | For each group, write the scale, then the 32 codes |
 | `q5a` variant 0 | Q5_1 | Write the plane-1 record (`d`, `m`), the high-plane word, then the 16 code bytes in GGUF nibble order |
+| `q5a` variant 0, every zero equal to `f16(−16 × scale)` | Q5_0 | Write the scale, the high-plane word, then the 16 code bytes in GGUF nibble order. Do not write the zero |
 | `q4a` variant 1 | Q4_K | Write `d` and `dmin`, the packed scales, then `qs` |
 | `q5a` variant 1 | Q5_K | As Q4_K, with `qh` between the packed scales and `qs` |
 | `q4c`, Q4_0 codebook | Q4_0 | For each group, write the scale, then the 16 code bytes in GGUF nibble order |
@@ -523,6 +636,11 @@ code of value `l` in bits 0–3 and of value `l + 16` in bits 4–7. For a
 K-quant super-block: byte `32c + l` of `qs` gets the code of value `64c + l`
 in bits 0–3 and of value `64c + 32 + l` in bits 4–7.
 
+The Q5_0 rebuild was checked on random blocks only, not on a real GGUF file. A
+`q5a` variant 0 tensor can always be rebuilt as Q5_1.
+
 A `q4c` tensor with another codebook has no GGUF equivalent. This includes
 tensors converted from IQ3_S and every tensor of the published Flash-Next
 checkpoint, which has learned codebooks. Such a tensor needs a `q4c` kernel.
+The GGUF blocks of an affine `out_proj` cannot be rebuilt, because the
+importer rounded its values to `bf16`.
