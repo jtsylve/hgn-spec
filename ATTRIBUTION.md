@@ -83,7 +83,7 @@ redistributes neither.
 
 | Component | Relationship | License | Pinned revision | Source |
 | --- | --- | --- | --- | --- |
-| gufo | Subject of [Porting to gufo](PORTING-GUFO.md). Its file paths and current behavior are cited there | `MIT`, Copyright (c) 2026 Gufo contributors | `9cad13974cf6da0cd3674b4e0a88b14b7e4a2908` | [gufo-org/gufo](https://github.com/gufo-org/gufo) |
+| gufo | Subject of [Porting to gufo](PORTING-GUFO.md). Its file paths and current behavior are cited there | `MIT`, Copyright (c) 2026 Gufo contributors | `dea22ceea20d07f95a5ecbb2b06ffad7b93d0548` | [gufo-org/gufo](https://github.com/gufo-org/gufo) |
 | AMD RDNA 3.5 instruction set | Instruction names in the porting guides (`v_dot2_f32_bf16`, `v_dot2_f32_f16`, WMMA) | AMD documentation | — | [AMD GPUOpen](https://gpuopen.com/) |
 
 ## Trademarks

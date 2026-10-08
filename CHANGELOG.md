@@ -5,6 +5,21 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 numbers follow the [versioning rules](README.md#versioning) of this
 specification.
 
+## [Unreleased]
+
+### Changed
+
+- [Porting to gufo](PORTING-GUFO.md): planned against gufo commit `dea22ce`.
+  - The v2 and ht43 needs are mapped to gufo: the rotation vectors, the `ht`,
+    `i4r` and `q6g64` paths, the n-gram table file and the MTP head in the
+    checkpoint.
+  - New sections: the model constants and tokenizer, which HGN files do not
+    hold, and the cache identity.
+  - gufo's F32-only small tensors and the conversions that they need.
+  - The 16 MiB upload tasks, the next-chunk n-gram gather and the
+    BF16 GEMM of the indexer shapes.
+- [Attribution](ATTRIBUTION.md): the gufo pin is now commit `dea22ce`.
+
 ## [1.1.0] - 2026-10-07
 
 This version describes the halogen-flash 0.16.2 reader and the published
@@ -145,6 +160,7 @@ These facts remain **not established** in this version:
 - the row order of the 27B `q_proj` (query and gate for each head)
 - the structure and configuration values of the 27B drafter
 
+[Unreleased]: https://github.com/jtsylve/hgn-spec/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/jtsylve/hgn-spec/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/jtsylve/hgn-spec/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/jtsylve/hgn-spec/releases/tag/v1.0.0
